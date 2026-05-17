@@ -8,8 +8,7 @@ using namespace std;
 GP::GP(ModelType m, long seed) : model(m) { rng.seed(seed); }
 GP::~GP() { clearPopulation(); }
 
-void GP::clearPopulation() 
-{
+void GP::clearPopulation() {
     for (Node* tree : population) delete tree;
     population.clear();
 }
@@ -19,12 +18,10 @@ Node* GP::generateTree(int currentDepth, int maxDepth, bool isFull) {
         return new Node(TERMINAL, "F" + to_string(rng() % 9));
     }
     string funcName;
-    if (model == ARITHMETIC_CLASSIFIER) 
-    {
+    if (model == ARITHMETIC_CLASSIFIER) {
         string ops[] = {"+", "-", "*", "/"};
         funcName = ops[rng() % 4];
-    } else 
-    {
+    } else {
         funcName = "IF_GT"; // Placeholder for Decision Tree logic
     }
     Node* node = new Node(FUNCTION, funcName);
@@ -37,8 +34,7 @@ Node* GP::generateTree(int currentDepth, int maxDepth, bool isFull) {
 Metrics GP::calculateMetrics(Node* tree, const vector<Patient>& data) {
     double TP = 0, FP = 0, TN = 0, FN = 0;
     
-    for (const auto& p : data) 
-    {
+    for (const auto& p : data) {
         double result = tree->evaluate(p, model);
         int prediction = (result > 0) ? 1 : 0; 
         
@@ -58,25 +54,80 @@ Metrics GP::calculateMetrics(Node* tree, const vector<Patient>& data) {
     return m;
 }
 
-void GP::evaluatePopulationConcurrent(const vector<Patient>& data) 
-{
+// Helpers for True Subtree Crossover & Targeted Mutation
+void GP::collectNodes(Node* root, vector<Node*>& nodes) {
+    if (!root) return;
+    nodes.push_back(root);
+    collectNodes(root->left, nodes);
+    collectNodes(root->right, nodes);
+}
+
+void GP::mutate(Node* tree) {
+    vector<Node*> nodes;
+    collectNodes(tree, nodes);
+    if (nodes.empty()) return;
+    Node* target = nodes[rng() % nodes.size()];
+    
+    if (target->type == TERMINAL) {
+        target->value = "F" + to_string(rng() % 9);
+    } else if (model == ARITHMETIC_CLASSIFIER) {
+        string ops[] = {"+", "-", "*", "/"};
+        target->value = ops[rng() % 4];
+    }
+}
+
+//memetic experiment(out of scope)
+void GP::localSearch(Node* tree, const vector<Patient>& data) {
+    int learningSteps = 5; // How many tries the tree gets to improve itself
+    double currentBestFitness = tree->fitness;
+
+    for (int step = 0; step < learningSteps; step++) {
+        // 1. Create a temporary clone to test a new idea
+        Node* candidate = tree->clone();
+        
+        // 2. Try a random modification (learning)
+        mutate(candidate); 
+        
+        // 3. Evaluate if the new idea is better
+        Metrics m = calculateMetrics(candidate, data);
+        double candidateFitness = m.accuracy - (candidate->getDepth() * 0.1); 
+
+        // 4. Lamarckian Evolution: If it's better, permanently absorb the knowledge!
+        if (candidateFitness > currentBestFitness) {
+            // Wipe the old brain and replace it with the smarter candidate
+            delete tree->left;
+            delete tree->right;
+            tree->type = candidate->type;
+            tree->value = candidate->value;
+            tree->left = candidate->left ? candidate->left->clone() : nullptr;
+            tree->right = candidate->right ? candidate->right->clone() : nullptr;
+            
+            tree->fitness = candidateFitness;
+            currentBestFitness = candidateFitness;
+        }
+        delete candidate; // Clean up the temporary testing space
+    }
+}
+
+// Multithreaded Population Evaluation
+void GP::evaluatePopulationConcurrent(const vector<Patient>& data) {
     int numThreads = thread::hardware_concurrency();
     if (numThreads == 0) numThreads = 4; 
     vector<thread> threads;
     int chunkSize = population.size() / numThreads;
 
-    auto worker = [&](int start, int end) 
-    {
-        for (int i = start; i < end; ++i) 
-        {
+    auto worker = [&](int start, int end) {
+        for (int i = start; i < end; ++i) {
+            // Standard Darwinian evaluation
             Metrics m = calculateMetrics(population[i], data);
-            // Parsimony Penalty: Prevent overfitting by punishing huge trees
             population[i]->fitness = m.accuracy - (population[i]->getDepth() * 0.1);
+            
+            // LAMARCKIAN UPGRADE: Let the tree learn and improve!
+            localSearch(population[i], data); 
         }
     };
 
-    for (int i = 0; i < numThreads; ++i) 
-    {
+    for (int i = 0; i < numThreads; ++i) {
         int start = i * chunkSize;
         int end = (i == numThreads - 1) ? population.size() : (i + 1) * chunkSize;
         threads.emplace_back(worker, start, end);
@@ -84,35 +135,22 @@ void GP::evaluatePopulationConcurrent(const vector<Patient>& data)
     for (auto& t : threads) t.join();
 }
 
-Node* GP::tournamentSelection() 
-{
+Node* GP::tournamentSelection() {
     Node* best = population[rng() % POPULATION_SIZE];
-    for (int i = 1; i < TOURNAMENT_SIZE; ++i) 
-    {
+    for (int i = 1; i < TOURNAMENT_SIZE; ++i) {
         Node* competitor = population[rng() % POPULATION_SIZE];
         if (competitor->fitness > best->fitness) best = competitor;
     }
     return best;
 }
 
-// True Subtree Crossover Fix
-void GP::collectNodes(Node* root, vector<Node*>& nodes) 
-{
-    if (!root) return;
-    nodes.push_back(root);
-    collectNodes(root->left, nodes);
-    collectNodes(root->right, nodes);
-}
-
-Node* GP::crossover(Node* parent1, Node* parent2) 
-{
+Node* GP::crossover(Node* parent1, Node* parent2) {
     Node* child = parent1->clone();
     vector<Node*> childNodes, p2Nodes;
     collectNodes(child, childNodes);
     collectNodes(parent2, p2Nodes);
     
-    if (childNodes.size() > 1 && p2Nodes.size() > 1) 
-    {
+    if (childNodes.size() > 1 && p2Nodes.size() > 1) {
         Node* targetNode = childNodes[1 + (rng() % (childNodes.size() - 1))];
         Node* sourceNode = p2Nodes[1 + (rng() % (p2Nodes.size() - 1))];
         
@@ -126,50 +164,28 @@ Node* GP::crossover(Node* parent1, Node* parent2)
     return child;
 }
 
-void GP::mutate(Node* tree) 
-{
-    vector<Node*> nodes;
-    collectNodes(tree, nodes);
-    if (nodes.empty()) return;
-    Node* target = nodes[rng() % nodes.size()];
-    
-    if (target->type == TERMINAL) 
-    {
-        target->value = "F" + to_string(rng() % 9);
-    } else if (model == ARITHMETIC_CLASSIFIER) 
-    {
-        string ops[] = {"+", "-", "*", "/"};
-        target->value = ops[rng() % 4];
-    }
-}
-
-Node* GP::train(const vector<Patient>& trainData) 
-{
+Node* GP::train(const vector<Patient>& trainData) {
     clearPopulation();
-    for (int i = 0; i < POPULATION_SIZE; ++i) 
-    {
+    for (int i = 0; i < POPULATION_SIZE; ++i) {
         population.push_back(generateTree(0, 2 + (i % (MAX_DEPTH - 1)), i < POPULATION_SIZE / 2));
     }
     Node* globalBest = nullptr;
 
-    for (int gen = 0; gen < MAX_GENERATIONS; ++gen) 
-    {
+    for (int gen = 0; gen < MAX_GENERATIONS; ++gen) {
         evaluatePopulationConcurrent(trainData); 
         Node* genBest = population[0];
-        for (Node* n : population) 
-        {
+        for (Node* n : population) {
             if (n->fitness > genBest->fitness) genBest = n;
         }
-        if (!globalBest || genBest->fitness > globalBest->fitness) 
-        {
+        if (!globalBest || genBest->fitness > globalBest->fitness) {
             if (globalBest) delete globalBest;
             globalBest = genBest->clone();
         }
 
         vector<Node*> newPopulation;
-        newPopulation.push_back(globalBest->clone()); 
-        while (newPopulation.size() < POPULATION_SIZE) 
-        {
+        newPopulation.push_back(globalBest->clone()); // Elitism
+        
+        while (newPopulation.size() < POPULATION_SIZE) {
             Node* child = crossover(tournamentSelection(), tournamentSelection());
             if (rng() % 100 < MUTATION_RATE * 100) mutate(child);
             newPopulation.push_back(child);
@@ -180,7 +196,6 @@ Node* GP::train(const vector<Patient>& trainData)
     return globalBest;
 }
 
-Metrics GP::test(Node* bestModel, const vector<Patient>& testData) 
-{
+Metrics GP::test(Node* bestModel, const vector<Patient>& testData) {
     return calculateMetrics(bestModel, testData);
 }

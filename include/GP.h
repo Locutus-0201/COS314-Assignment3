@@ -24,6 +24,7 @@ struct RunResult
 class GP 
 {
 private:
+    void localSearch(Node* tree, const std::vector<Patient>& data);
     std::vector<Node*> population;
     ModelType model;
     std::mt19937 rng;
